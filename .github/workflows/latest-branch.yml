@@ -13,6 +13,7 @@ jobs:
         uses: actions/checkout@v4
       - name: Check branches
         run: |
+          git fetch
           git branch -a
           LATEST_RELEASE=$(git branch -a | grep -o "release-[[:digit:]].\([[:digit:]]*\)" | sed -e "s/^release-//" | sort -V | tail -n 1)
           echo "$LATEST_RELEASE"
