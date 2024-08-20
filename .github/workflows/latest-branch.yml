@@ -13,7 +13,7 @@ jobs:
         uses: actions/checkout@v4
       - name: Check branches
         run: |
-          echo "git branch -a"
+          git fetch
           LATEST_RELEASE=$(git branch -a | grep -o "release-[[:digit:]].\([[:digit:]]*\)" | sed -e "s/^release-//" | sort -V | tail -n 1)
           echo "$LATEST_RELEASE"
           echo ${{ github.base_ref }}
