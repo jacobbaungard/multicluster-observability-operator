@@ -7,6 +7,7 @@ package tests
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -17,6 +18,12 @@ import (
 
 var _ = Describe("", func() {
 	BeforeEach(func() {
+
+		cloudProvider := strings.ToLower(os.Getenv("CLOUD_PROVIDER"))
+		if strings.Contains(cloudProvider, "IBMZ") {
+			Skip("skip on IMB-z as victoria-metrics image not available")
+		}
+
 		hubClient = utils.NewKubeClient(
 			testOptions.HubCluster.ClusterServerURL,
 			testOptions.KubeConfig,
