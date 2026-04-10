@@ -1,0 +1,69 @@
+kind: ConfigMap
+apiVersion: v1
+metadata:
+  name: thanos-ruler-hub-metrics-rules
+data:
+  hub_rules.yaml: |
+    groups:
+      - name: cluster-health-records
+        rules:
+        - record: cluster:metrics_received:heartbeat
+          # We use a set of fallback metrics to create a reliable heartbeat.
+          # We aggregate raw metrics by cluster FIRST to keep cardinality low.
+          # Pre-aggregated recording rules are placed first.
+          expr: |
+            group by (cluster, clusterID) (cluster:cpu_cores:sum)
+            or
+            group by (cluster, clusterID) (machine_cpu_cores)
+            or
+            group by (cluster, clusterID) (node_memory_MemAvailable_bytes)
+            or
+            group by (cluster, clusterID) (up)
+            or
+            group by (cluster, clusterID) (apiserver_request_total)
+            or
+            group by (cluster, clusterID) (kube_pod_info)
+      - name: cluster-health
+        rules:
+        - alert: ObservabilityHubInventoryMissing
+          annotations:
+            summary: "Hub cluster lifecycle inventory metrics are missing."
+            description: "The foundational metric 'acm_managed_cluster_labels' is missing from the Hub. This indicates that the Hub's own cluster-lifecycle metrics collection is failing, rendering all multi-cluster observability alerts blind."
+            investigation: >
+              The 'acm_managed_cluster_labels' metric is managed by MCE and scraped from the 
+              clusterlifecycle-state-metrics pod in the multicluster-engine namespace by the 
+              Hub's in-cluster Prometheus. First, verify the metric is successfully scraped by 
+              the Hub platform Prometheus (check OCP Console -> Observe -> Metrics). If present 
+              there, verify ACM Observability is configured to ingest it (allow-list/scrapeConfig) 
+              and trace the ingestion path from the Prometheus agent/collector to the Hub's 
+              Thanos Receive endpoint.
+          expr: absent(acm_managed_cluster_labels)
+          for: 10m
+          labels:
+            severity: critical
+        - alert: ManagedClusterMetricsMissing
+          annotations:
+            summary: "Managed cluster {{ $labels.cluster }} is not sending metrics."
+            description: "The managed cluster {{ $labels.cluster }} observability addon lease is reporting as 'available', but no metrics have been received on the Hub for the last 15 minutes."
+            investigation: >
+              Context: The OCM 'feature.open-cluster-management.io/addon-*' label only tracks 
+              the lease status (available, unhealthy, unreachable). It does not reflect functional 
+              degradation. The collector might be running and updating its lease, but failing 
+              to federate or remote-write metrics due to network issues, auth failures, or 
+              internal crashes. Check the metrics-collector or prometheus-agent (MCOA) logs on 
+              the spoke cluster and the Thanos receive endpoints on the Hub.
+          # This alert uses the synthetic heartbeat to support both Legacy and MCOA architectures.
+          expr: |
+            (
+              label_replace(label_replace(acm_managed_cluster_labels{maintenance_mode=~"false|", feature_open_cluster_management_io_addon_multicluster_observability_addon="available"}, "cluster", "$1", "name", "(.*)"), "clusterID", "$1", "managed_cluster_id", "(.*)")
+              or
+              label_replace(label_replace(acm_managed_cluster_labels{maintenance_mode=~"false|", feature_open_cluster_management_io_addon_observability_controller="available"}, "cluster", "$1", "name", "(.*)"), "clusterID", "$1", "managed_cluster_id", "(.*)")
+            )
+            unless on(cluster, clusterID) (
+              cluster:metrics_received:heartbeat
+            )
+          for: 15m
+          labels:
+            severity: critical
+            cluster: "{{ $labels.cluster }}"
+            clusterID: "{{ $labels.clusterID }}"
