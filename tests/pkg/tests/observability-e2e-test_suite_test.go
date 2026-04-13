@@ -49,11 +49,12 @@ const (
 	charset             = "abcdefghijklmnopqrstuvwxyz" +
 		"0123456789"
 
-	MCO_CR_NAME         = "observability"
-	MCO_NAMESPACE       = "open-cluster-management-observability"
-	MCO_ADDON_NAMESPACE = "open-cluster-management-addon-observability"
-	MCO_LABEL           = "name=multicluster-observability-operator"
-	MCO_LABEL_OWNER     = "owner=multicluster-observability-operator"
+	MCO_CR_NAME              = "observability"
+	MCO_NAMESPACE            = "open-cluster-management-observability"
+	MCO_ADDON_NAMESPACE      = "open-cluster-management-addon-observability"
+	MCO_GLOBAL_SET_NAMESPACE = "open-cluster-management-global-set"
+	MCO_LABEL                = "name=multicluster-observability-operator"
+	MCO_LABEL_OWNER          = "owner=multicluster-observability-operator"
 
 	ALERTMANAGER_LABEL      = "app=multicluster-observability-alertmanager"
 	GRAFANA_LABEL           = "app=multicluster-observability-grafana"
