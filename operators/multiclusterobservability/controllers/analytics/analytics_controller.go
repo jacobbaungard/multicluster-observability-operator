@@ -8,12 +8,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 
 	"github.com/go-logr/logr"
 	mcov1beta2 "github.com/stolostron/multicluster-observability-operator/operators/multiclusterobservability/api/v1beta2"
 	rightsizingctrl "github.com/stolostron/multicluster-observability-operator/operators/multiclusterobservability/controllers/analytics/rightsizing"
 	mcoctrl "github.com/stolostron/multicluster-observability-operator/operators/multiclusterobservability/controllers/multiclusterobservability"
 	"github.com/stolostron/multicluster-observability-operator/operators/multiclusterobservability/pkg/config"
+	commonutil "github.com/stolostron/multicluster-observability-operator/operators/pkg/util"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -29,6 +31,8 @@ var log = logf.Log.WithName("controller_rightsizing")
 
 var mcoGVK = mcov1beta2.GroupVersion.WithKind("MultiClusterObservability")
 
+const analyticsFinalizer = "observability.open-cluster-management.io/analytics-cleanup"
+
 // AnalyticsReconciler reconciles a MultiClusterObservability object
 type AnalyticsReconciler struct {
 	Client client.Client
@@ -40,14 +44,14 @@ type AnalyticsReconciler struct {
 // +kubebuilder:rbac:groups=observability.open-cluster-management.io,resources=multiclusterobservabilities/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=observability.open-cluster-management.io,resources=multiclusterobservabilities/finalizers,verbs=update
 
+// Reconcile handles reconciliation of right-sizing resources based on the MCO lifecycle.
 func (r *AnalyticsReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	reqLogger := log.WithValues("Request.Namespace", req.Namespace, "Request.Name", req.Name)
 	reqLogger.Info("Reconciling RightSizing")
 
 	// Fetch the MultiClusterObservability instance
 	mcoList := &mcov1beta2.MultiClusterObservabilityList{}
-	err := r.Client.List(ctx, mcoList)
-	if err != nil {
+	if err := r.Client.List(ctx, mcoList); err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to list MultiClusterObservability custom resources: %w", err)
 	}
 	if len(mcoList.Items) == 0 {
@@ -57,6 +61,35 @@ func (r *AnalyticsReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 
 	instance := mcoList.Items[0].DeepCopy()
 
+	// Handle deletion: clean up RS resources and remove our finalizer
+	if instance.GetDeletionTimestamp() != nil {
+		if !slices.Contains(instance.GetFinalizers(), analyticsFinalizer) {
+			return ctrl.Result{}, nil // not our responsibility (e.g., upgrade from older version)
+		}
+		reqLogger.Info("rs - MCO is terminating, cleaning up right-sizing resources")
+		if err := rightsizingctrl.CleanupRightSizingResources(ctx, r.Client, instance); err != nil {
+			return ctrl.Result{}, fmt.Errorf("rs - failed to cleanup right-sizing resources: %w", err)
+		}
+		instanceCopy := instance.DeepCopy()
+		instance.SetFinalizers(commonutil.Remove(instance.GetFinalizers(), analyticsFinalizer))
+		if err := r.Client.Patch(ctx, instance, client.MergeFrom(instanceCopy)); err != nil {
+			return ctrl.Result{}, fmt.Errorf("rs - failed to remove analytics finalizer: %w", err)
+		}
+		reqLogger.Info("rs - Analytics finalizer removed after RS cleanup")
+		return ctrl.Result{}, nil
+	}
+
+	// Normal path: ensure our finalizer is present
+	if !slices.Contains(instance.GetFinalizers(), analyticsFinalizer) {
+		instanceCopy := instance.DeepCopy()
+		instance.SetFinalizers(append(instance.GetFinalizers(), analyticsFinalizer))
+		if err := r.Client.Patch(ctx, instance, client.MergeFrom(instanceCopy)); err != nil {
+			return ctrl.Result{}, fmt.Errorf("rs - failed to add analytics finalizer: %w", err)
+		}
+		reqLogger.Info("rs - Analytics finalizer added to MCO CR")
+		return ctrl.Result{}, nil // watch-triggered reconcile picks up updated finalizers
+	}
+
 	// Do not reconcile objects if this instance of mch is labeled "paused"
 	if config.IsPaused(instance.GetAnnotations()) {
 		reqLogger.Info("MCO reconciliation is paused. Nothing more to do.")
@@ -64,15 +97,14 @@ func (r *AnalyticsReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	}
 
 	// Ensure defaults are set/persisted for analytics right-sizing
-	instance, err = r.ensureRightSizingDefaults(ctx, instance, reqLogger)
+	instance, err := r.ensureRightSizingDefaults(ctx, instance, reqLogger)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
 
 	// create rightsizing component
-	err = rightsizingctrl.CreateRightSizingComponent(ctx, r.Client, instance)
-	if err != nil {
-		return ctrl.Result{}, fmt.Errorf("failed to create rightsizing component: %w", err)
+	if err := rightsizingctrl.CreateRightSizingComponent(ctx, r.Client, instance); err != nil {
+		return ctrl.Result{}, fmt.Errorf("rs - failed to create rightsizing component: %w", err)
 	}
 
 	return ctrl.Result{}, nil
